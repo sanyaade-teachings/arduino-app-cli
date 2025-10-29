@@ -132,6 +132,7 @@ func (s *Service) AppBrickInstanceDetails(a *app.ArduinoApp, brickID string) (Br
 		ModelID:          modelID,
 	}, nil
 }
+
 func getBrickInstanceVariableDetails(
 	brick *bricksindex.Brick,
 	brickInstanceVariables map[string]string,
