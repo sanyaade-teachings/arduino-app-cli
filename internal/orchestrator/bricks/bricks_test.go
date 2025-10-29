@@ -3,8 +3,9 @@ package bricks
 import (
 	"testing"
 
-	"github.com/arduino/arduino-app-cli/internal/orchestrator/bricksindex"
 	"github.com/stretchr/testify/require"
+
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/bricksindex"
 )
 
 func TestGetBrickInstanceVariableDetails(t *testing.T) {
