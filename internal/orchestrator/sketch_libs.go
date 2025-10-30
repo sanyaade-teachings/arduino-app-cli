@@ -46,9 +46,9 @@ func AddSketchLibrary(ctx context.Context, app app.ArduinoApp, libRef LibraryRel
 	resp, err := srv.ProfileLibAdd(ctx, &rpc.ProfileLibAddRequest{
 		Instance:   inst,
 		SketchPath: app.MainSketchPath.String(),
-		Library: &rpc.SketchProfileLibraryReference{
-			Library: &rpc.SketchProfileLibraryReference_IndexLibrary_{
-				IndexLibrary: &rpc.SketchProfileLibraryReference_IndexLibrary{
+		Library: &rpc.ProfileLibraryReference{
+			Library: &rpc.ProfileLibraryReference_IndexLibrary_{
+				IndexLibrary: &rpc.ProfileLibraryReference_IndexLibrary{
 					Name:    libRef.Name,
 					Version: libRef.Version,
 				},
@@ -62,11 +62,11 @@ func AddSketchLibrary(ctx context.Context, app app.ArduinoApp, libRef LibraryRel
 	return f.Map(resp.GetAddedLibraries(), rpcProfileLibReferenceToLibReleaseID), nil
 }
 
-func RemoveSketchLibrary(ctx context.Context, app app.ArduinoApp, libRef LibraryReleaseID) (LibraryReleaseID, error) {
+func RemoveSketchLibrary(ctx context.Context, app app.ArduinoApp, libRef LibraryReleaseID, removeDeps bool) ([]LibraryReleaseID, error) {
 	srv := commands.NewArduinoCoreServer()
 	var inst *rpc.Instance
 	if res, err := srv.Create(ctx, &rpc.CreateRequest{}); err != nil {
-		return LibraryReleaseID{}, err
+		return nil, err
 	} else {
 		inst = res.Instance
 	}
@@ -77,23 +77,24 @@ func RemoveSketchLibrary(ctx context.Context, app app.ArduinoApp, libRef Library
 		// TODO: LOG progress/error?
 		return nil
 	})); err != nil {
-		return LibraryReleaseID{}, err
+		return nil, err
 	}
 
 	resp, err := srv.ProfileLibRemove(ctx, &rpc.ProfileLibRemoveRequest{
-		Library: &rpc.SketchProfileLibraryReference{
-			Library: &rpc.SketchProfileLibraryReference_IndexLibrary_{
-				IndexLibrary: &rpc.SketchProfileLibraryReference_IndexLibrary{
+		Library: &rpc.ProfileLibraryReference{
+			Library: &rpc.ProfileLibraryReference_IndexLibrary_{
+				IndexLibrary: &rpc.ProfileLibraryReference_IndexLibrary{
 					Name: libRef.Name,
 				},
 			},
 		},
-		SketchPath: app.MainSketchPath.String(),
+		SketchPath:         app.MainSketchPath.String(),
+		RemoveDependencies: &removeDeps,
 	})
 	if err != nil {
-		return LibraryReleaseID{}, err
+		return nil, err
 	}
-	return rpcProfileLibReferenceToLibReleaseID(resp.GetLibrary()), nil
+	return f.Map(resp.GetRemovedLibraries(), rpcProfileLibReferenceToLibReleaseID), nil
 }
 
 func ListSketchLibraries(ctx context.Context, app app.ArduinoApp) ([]LibraryReleaseID, error) {
@@ -107,19 +108,17 @@ func ListSketchLibraries(ctx context.Context, app app.ArduinoApp) ([]LibraryRele
 	}
 
 	// Keep only index libraries
-	libs := f.Filter(resp.Libraries, func(l *rpc.SketchProfileLibraryReference) bool {
+	libs := f.Filter(resp.Libraries, func(l *rpc.ProfileLibraryReference) bool {
 		return l.GetIndexLibrary() != nil
 	})
-	res := f.Map(libs, func(l *rpc.SketchProfileLibraryReference) LibraryReleaseID {
-		return LibraryReleaseID{
-			Name:    l.GetIndexLibrary().GetName(),
-			Version: l.GetIndexLibrary().GetVersion(),
-		}
-	})
-	return res, nil
+	return f.Map(libs, rpcProfileLibReferenceToLibReleaseID), nil
 }
 
-func rpcProfileLibReferenceToLibReleaseID(ref *rpc.SketchProfileLibraryReference) LibraryReleaseID {
+func rpcProfileLibReferenceToLibReleaseID(ref *rpc.ProfileLibraryReference) LibraryReleaseID {
 	l := ref.GetIndexLibrary()
-	return NewLibraryReleaseID(l.GetName(), l.GetVersion())
+	return LibraryReleaseID{
+		Name:         l.GetName(),
+		Version:      l.GetVersion(),
+		IsDependency: l.GetIsDependency(),
+	}
 }
