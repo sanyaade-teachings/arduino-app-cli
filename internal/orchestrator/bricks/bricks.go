@@ -18,7 +18,6 @@ package bricks
 import (
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 
 	"github.com/arduino/go-paths-helper"
@@ -79,7 +78,7 @@ func (s *Service) AppBrickInstancesList(a *app.ArduinoApp) (AppBrickInstancesRes
 			return AppBrickInstancesResult{}, fmt.Errorf("brick not found with id %s", brickInstance.ID)
 		}
 
-		instanceVariables := getBrickInstanceVariableDetails(brick, brickInstance.Variables)
+		variablesMap, instanceVariables := getBrickVariableDetails(brick, brickInstance.Variables)
 
 		res.BrickInstances[i] = BrickInstance{
 			ID:               brick.ID,
@@ -87,8 +86,8 @@ func (s *Service) AppBrickInstancesList(a *app.ArduinoApp) (AppBrickInstancesRes
 			Author:           "Arduino", // TODO: for now we only support our bricks
 			Category:         brick.Category,
 			Status:           "installed",
-			ModelID:          brickInstance.Model,     // TODO: in case is not set by the user, should we return the default model?
-			Variables:        brickInstance.Variables, // TODO: do we want to show also the default value of not explicitly set variables?
+			ModelID:          brickInstance.Model, // TODO: in case is not set by the user, should we return the default model?
+			Variables:        variablesMap,        // TODO: do we want to show also the default value of not explicitly set variables?
 			VariablesDetails: instanceVariables,
 		}
 
@@ -107,14 +106,7 @@ func (s *Service) AppBrickInstanceDetails(a *app.ArduinoApp, brickID string) (Br
 		return BrickInstance{}, fmt.Errorf("brick %s not added in the app", brickID)
 	}
 
-	variables := make(map[string]string, len(brick.Variables))
-	for _, v := range brick.Variables {
-		variables[v.Name] = v.DefaultValue
-	}
-	// Add/Update the variables with the ones from the app descriptor
-	maps.Copy(variables, a.Descriptor.Bricks[brickIndex].Variables)
-
-	instanceVariables := getBrickInstanceVariableDetails(brick, a.Descriptor.Bricks[brickIndex].Variables)
+	variables, instanceVariables := getBrickVariableDetails(brick, a.Descriptor.Bricks[brickIndex].Variables)
 
 	modelID := a.Descriptor.Bricks[brickIndex].Model
 	if modelID == "" {
@@ -133,21 +125,30 @@ func (s *Service) AppBrickInstanceDetails(a *app.ArduinoApp, brickID string) (Br
 	}, nil
 }
 
-func getBrickInstanceVariableDetails(
-	brick *bricksindex.Brick,
-	brickInstanceVariables map[string]string,
-) []BrickInstanceVariable {
+func getBrickVariableDetails(
+	brick *bricksindex.Brick, userVariables map[string]string,
+) (map[string]string, []BrickInstanceVariable) {
+	variablesMap := make(map[string]string, len(brick.Variables))
 	variableDetails := make([]BrickInstanceVariable, 0, len(brick.Variables))
+
 	for _, v := range brick.Variables {
-		value := brickInstanceVariables[v.Name]
+		finalValue := v.DefaultValue
+
+		userValue, ok := userVariables[v.Name]
+		if ok {
+			finalValue = userValue
+		}
+		variablesMap[v.Name] = finalValue
+
 		variableDetails = append(variableDetails, BrickInstanceVariable{
 			Name:        v.Name,
-			Value:       value,
+			Value:       finalValue,
 			Description: v.Description,
 			Required:    v.IsRequired(),
 		})
 	}
-	return variableDetails
+
+	return variablesMap, variableDetails
 }
 
 func (s *Service) BricksDetails(id string) (BrickDetailsResult, error) {
