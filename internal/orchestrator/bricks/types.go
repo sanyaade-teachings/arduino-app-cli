@@ -20,13 +20,12 @@ type BrickListResult struct {
 }
 
 type BrickListItem struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Author      string   `json:"author"`
-	Description string   `json:"description"`
-	Category    string   `json:"category"`
-	Status      string   `json:"status"`
-	Models      []string `json:"models"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Author      string `json:"author"`
+	Description string `json:"description"`
+	Category    string `json:"category"`
+	Status      string `json:"status"`
 }
 
 type AppBrickInstancesResult struct {
@@ -78,4 +77,11 @@ type BrickDetailsResult struct {
 	ApiDocsPath  string                   `json:"api_docs_path"`
 	CodeExamples []CodeExample            `json:"code_examples"`
 	UsedByApps   []AppReference           `json:"used_by_apps"`
+	Models       []AIModel                `json:"models"`
+}
+
+type AIModel struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }

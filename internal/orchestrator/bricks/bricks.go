@@ -64,9 +64,6 @@ func (s *Service) List() (BrickListResult, error) {
 			Description: brick.Description,
 			Category:    brick.Category,
 			Status:      "installed",
-			Models: f.Map(s.modelsIndex.GetModelsByBrick(brick.ID), func(m modelsindex.AIModel) string {
-				return m.ID
-			}),
 		}
 	}
 	return res, nil
@@ -193,7 +190,6 @@ func (s *Service) BricksDetails(id string, idProvider *app.IDProvider,
 	if err != nil {
 		return BrickDetailsResult{}, fmt.Errorf("unable to get used by apps: %w", err)
 	}
-
 	return BrickDetailsResult{
 		ID:           id,
 		Name:         brick.Name,
@@ -206,6 +202,13 @@ func (s *Service) BricksDetails(id string, idProvider *app.IDProvider,
 		ApiDocsPath:  apiDocsPath,
 		CodeExamples: codeExamples,
 		UsedByApps:   usedByApps,
+		Models: f.Map(s.modelsIndex.GetModelsByBrick(brick.ID), func(m modelsindex.AIModel) AIModel {
+			return AIModel{
+				ID:          m.ID,
+				Name:        m.Name,
+				Description: m.ModuleDescription,
+			}
+		}),
 	}, nil
 }
 
