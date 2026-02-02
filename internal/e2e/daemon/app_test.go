@@ -1020,6 +1020,7 @@ func TestExportApp(t *testing.T) {
 	httpClient := GetHttpclient(t)
 
 	appName := "AppToExport"
+	rootFolder := strings.ToLower(appName)
 	createResp, err := httpClient.CreateAppWithResponse(
 		t.Context(),
 		&client.CreateAppParams{SkipSketch: f.Ptr(true)},
@@ -1063,9 +1064,9 @@ func TestExportApp(t *testing.T) {
 		require.Contains(t, exportResp.Header.Get("Content-Disposition"), "attachment; filename=")
 
 		files := readZipFiles(t, exportResp.Body)
-		assert.Contains(t, files, "app.yaml")
-		assert.Contains(t, files, "python/main.py")
-		assert.NotContains(t, files, ".cache")
+		assert.Contains(t, files, rootFolder+"/app.yaml")
+		assert.Contains(t, files, rootFolder+"/python/main.py")
+		assert.NotContains(t, files, rootFolder+"/.cache")
 	})
 
 	t.Run("ExportWithIncludeData_Success", func(t *testing.T) {
@@ -1082,7 +1083,7 @@ func TestExportApp(t *testing.T) {
 		require.Equal(t, http.StatusOK, exportResp.StatusCode)
 		require.Equal(t, "application/zip", exportResp.Header.Get("Content-Type"))
 		files := readZipFiles(t, exportResp.Body)
-		assert.Contains(t, files, "app.yaml")
+		assert.Contains(t, files, rootFolder+"/app.yaml")
 	})
 
 	t.Run("InvalidAppId_Fail", func(t *testing.T) {
@@ -1163,12 +1164,46 @@ func TestImportApp(t *testing.T) {
 
 		return body, writer.FormDataContentType()
 	}
-
-	t.Run("Import_ValidApp_Success", func(t *testing.T) {
-		appFolderName := "my-imported-app"
+	t.Run("Import_ValidNestedApp_Success", func(t *testing.T) {
+		appFolderName := "my-nested-app"
+		rootPrefix := "random-folder-root"
 
 		zipData := createZipBytes(t, map[string]string{
-			"app.yaml":       fmt.Sprintf("name: %s\ndescription: my app", appFolderName),
+			rootPrefix + "/app.yaml":       fmt.Sprintf("name: %s\ndescription: nested app", appFolderName),
+			rootPrefix + "/python/main.py": "print('Hello nested world')",
+		})
+		bodyBuf, contentType := createMultipartBody(t, zipData)
+
+		importResp, err := httpClient.ImportAppWithBody(
+			t.Context(),
+			&client.ImportAppParams{},
+			contentType,
+			bodyBuf,
+		)
+		require.NoError(t, err)
+
+		require.Equal(t, http.StatusCreated, importResp.StatusCode)
+		require.NotNil(t, importResp.Body)
+		defer importResp.Body.Close()
+
+		var importRespBody handlers.AppImportResponse
+		body, err := io.ReadAll(importResp.Body)
+		require.NoError(t, err)
+		err = json.Unmarshal(body, &importRespBody)
+		require.NoError(t, err)
+		require.NotNil(t, importRespBody.ID)
+
+		getResp, err := httpClient.GetAppDetailsWithResponse(t.Context(), importRespBody.ID)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, getResp.StatusCode())
+		require.Equal(t, appFolderName, getResp.JSON200.Name)
+	})
+
+	t.Run("Import_ValidApp_Success", func(t *testing.T) {
+		appFolderName := "test-app"
+
+		zipData := createZipBytes(t, map[string]string{
+			"app.yaml":       "name: my app \ndescription: my app",
 			"python/main.py": "print('Hello imported world')",
 		})
 		bodyBuf, contentType := createMultipartBody(t, zipData)
@@ -1196,11 +1231,41 @@ func TestImportApp(t *testing.T) {
 		getResp, err := httpClient.GetAppDetailsWithResponse(t.Context(), importedAppId)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, getResp.StatusCode())
-		require.Equal(t, "my-imported-app", getResp.JSON200.Name)
+		require.Equal(t, "my app", getResp.JSON200.Name)
 		expectedID := base64.RawStdEncoding.EncodeToString([]byte("user:" + appFolderName))
 		require.Equal(t, expectedID, getResp.JSON200.Id)
 	})
+	t.Run("Import_DeeplyNestedApp_Fail", func(t *testing.T) {
+		appFolderName := "my-nested-app"
+		rootPrefix := "random-folder-root/nested-levels"
 
+		zipData := createZipBytes(t, map[string]string{
+			rootPrefix + "/app.yaml":       fmt.Sprintf("name: %s\ndescription: nested app", appFolderName),
+			rootPrefix + "/python/main.py": "print('Hello nested world')",
+		})
+		bodyBuf, contentType := createMultipartBody(t, zipData)
+
+		importResp, err := httpClient.ImportAppWithBody(
+			t.Context(),
+			&client.ImportAppParams{},
+			contentType,
+			bodyBuf,
+		)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusBadRequest, importResp.StatusCode)
+
+		require.NotNil(t, importResp.Body)
+		defer importResp.Body.Close()
+
+		bodyBytes, err := io.ReadAll(importResp.Body)
+		require.NoError(t, err)
+		var errorResponse models.ErrorResponse
+		err = json.Unmarshal(bodyBytes, &errorResponse)
+		require.NoError(t, err)
+		expectedMsg := "bad request: invalid archive structure: missing or misplaced app.yaml. Supported paths: archive.zip/app.yaml or archive.zip/<root_dir>/app.yaml"
+		require.Equal(t, expectedMsg, errorResponse.Details)
+
+	})
 	t.Run("Import_MissingAppYaml_Fail", func(t *testing.T) {
 		zipData := createZipBytes(t, map[string]string{
 			"python/main.py": "print('No app.yaml here')",
@@ -1225,7 +1290,7 @@ func TestImportApp(t *testing.T) {
 		var errorResponse models.ErrorResponse
 		err = json.Unmarshal(bodyBytes, &errorResponse)
 		require.NoError(t, err)
-		expectedMsg := "bad request: missing app.yaml"
+		expectedMsg := "bad request: invalid archive structure: missing or misplaced app.yaml. Supported paths: archive.zip/app.yaml or archive.zip/<root_dir>/app.yaml"
 		require.Equal(t, expectedMsg, errorResponse.Details)
 
 	})

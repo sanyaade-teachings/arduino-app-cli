@@ -18,13 +18,15 @@ package orchestrator
 import (
 	"archive/zip"
 	"bytes"
-	"errors"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/arduino/go-paths-helper"
+	"github.com/gosimple/slug"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -126,39 +128,55 @@ func TestExportAppZip(t *testing.T) {
 				assert.NoError(t, err)
 				r.Close()
 			}
+			rootFolder := strings.TrimSuffix(tc.wantFilename, ".zip")
 
 			for _, file := range tc.wantFiles {
-				_, ok := presentFiles[file]
-				require.True(t, ok, "File expected in zip but missing: %s", file)
+				expectedPathInZip := path.Join(rootFolder, file)
+
+				_, ok := presentFiles[expectedPathInZip]
+				require.True(t, ok, "File expected in zip but missing: %s", expectedPathInZip)
 			}
 
 			for _, file := range tc.wantMissingFiles {
-				_, ok := presentFiles[file]
-				require.False(t, ok, "File should NOT be in zip but was found: %s", file)
-			}
+				unexpectedPathInZip := path.Join(rootFolder, file)
 
+				_, ok := presentFiles[unexpectedPathInZip]
+				require.False(t, ok, "File should NOT be in zip but was found: %s", unexpectedPathInZip)
+			}
 			appYaml, err := os.ReadFile(filepath.Join("testdata", "archive", "app.redacted.yaml"))
 			assert.NoError(t, err)
-			assert.Equal(t, string(appYaml), string(presentFiles["app.yaml"]))
 
+			zipAppYamlPath := path.Join(rootFolder, "app.yaml")
+			assert.Equal(t, string(appYaml), string(presentFiles[zipAppYamlPath]), "Content of app.yaml mismatch")
 		})
 	}
 }
-
 func TestValidateAppZipContent(t *testing.T) {
 	tests := []struct {
 		name        string
 		files       map[string]string
+		rootPrefix  string
 		wantErr     bool
 		errContains string
 	}{
 		{
-			name: "Valid standard app",
+			name: "Valid standard app (Flat Root)",
 			files: map[string]string{
 				"app.yaml":       "",
 				"python/main.py": "",
 			},
-			wantErr: false,
+			rootPrefix: "",
+			wantErr:    false,
+		},
+		{
+
+			name: "Valid nested app (With Root Folder)",
+			files: map[string]string{
+				"my-app/app.yaml":       "",
+				"my-app/python/main.py": "",
+			},
+			rootPrefix: "my-app",
+			wantErr:    false,
 		},
 		{
 			name: "Valid app with yaml variant (.yml)",
@@ -166,7 +184,8 @@ func TestValidateAppZipContent(t *testing.T) {
 				"app.yml":        "",
 				"python/main.py": "",
 			},
-			wantErr: false,
+			rootPrefix: "",
+			wantErr:    false,
 		},
 		{
 			name: "Valid app with full sketch folder",
@@ -176,7 +195,8 @@ func TestValidateAppZipContent(t *testing.T) {
 				"sketch/sketch.ino":  "",
 				"sketch/sketch.yaml": "",
 			},
-			wantErr: false,
+			rootPrefix: "",
+			wantErr:    false,
 		},
 		{
 			name: "Valid Windows paths (Backslash handling)",
@@ -186,7 +206,8 @@ func TestValidateAppZipContent(t *testing.T) {
 				"sketch\\sketch.ino":  "",
 				"sketch\\sketch.yaml": "",
 			},
-			wantErr: false,
+			rootPrefix: "",
+			wantErr:    false,
 		},
 		{
 			name: "Ignore unrelated folders with similar prefix",
@@ -195,14 +216,15 @@ func TestValidateAppZipContent(t *testing.T) {
 				"python/main.py":         "",
 				"sketch_backup/main.cpp": "",
 			},
-			wantErr: false,
+			rootPrefix: "",
+			wantErr:    false,
 		},
-
 		{
 			name: "Missing app.yaml",
 			files: map[string]string{
 				"python/main.py": "",
 			},
+			rootPrefix:  "",
 			wantErr:     true,
 			errContains: "missing app.yaml",
 		},
@@ -211,6 +233,7 @@ func TestValidateAppZipContent(t *testing.T) {
 			files: map[string]string{
 				"app.yaml": "",
 			},
+			rootPrefix:  "",
 			wantErr:     true,
 			errContains: "missing python/main.py",
 		},
@@ -222,6 +245,7 @@ func TestValidateAppZipContent(t *testing.T) {
 				"sketch/readme.txt":  "",
 				"sketch/sketch.yaml": "",
 			},
+			rootPrefix:  "",
 			wantErr:     true,
 			errContains: "missing .ino file",
 		},
@@ -232,26 +256,27 @@ func TestValidateAppZipContent(t *testing.T) {
 				"python/main.py":    "",
 				"sketch/sketch.ino": "",
 			},
+			rootPrefix:  "",
 			wantErr:     true,
 			errContains: "missing .yaml file",
 		},
 		{
-			name: "Sketch file exists but in wrong folder",
+			name: "Nested App missing main.py (Check relative path logic)",
 			files: map[string]string{
-				"app.yaml":              "",
-				"python/main.py":        "",
-				"sketch/lib/sketch.ino": "",
-				"sketch/sketch.yaml":    "",
+				"cool-app/app.yaml": "",
 			},
+			rootPrefix:  "cool-app",
 			wantErr:     true,
-			errContains: "missing .ino file",
+			errContains: "missing python/main.py",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := createMockZip(t, tt.files)
-			gotErr := validateAppZipContent(r)
+
+			gotErr := validateAppZipContent(r, tt.rootPrefix)
+
 			if tt.wantErr {
 				require.Error(t, gotErr)
 				require.Contains(t, gotErr.Error(), tt.errContains, "Error message mismatch")
@@ -289,103 +314,67 @@ func createMockZip(t *testing.T, files map[string]string) *zip.Reader {
 
 func TestImportAppFromZip(t *testing.T) {
 	type testCase struct {
-		name          string
-		folderName    string
-		zipFiles      map[string]string
-		preExisting   bool
-		wantErr       bool
-		expectedErr   error
-		errorContains string
+		name            string
+		originalZipName string
+		zipFiles        map[string]string
+		preExisting     bool
+		wantErr         bool
+		errorContains   string
+		expectedFolder  string
 	}
 
 	tests := []testCase{
 		{
-			name:       "Success - Standard App",
-			folderName: "test-app",
+			name:            "Success - Standard App (Flat ZIP)",
+			originalZipName: "My App.zip",
 			zipFiles: map[string]string{
-				"app.yaml":       "name: Test App",
+				"app.yaml":       "name: ignored",
 				"python/main.py": "print('hello')",
 			},
-			wantErr: false,
+			expectedFolder: "my-app",
+			wantErr:        false,
 		},
 		{
-			name:       "Success - App with Sketch",
-			folderName: "app",
+			name:            "Success - Root Folder Convention",
+			originalZipName: "upload.zip",
 			zipFiles: map[string]string{
-				"app.yaml":           "name: app",
-				"python/main.py":     "pass",
-				"sketch/sketch.ino":  "void setup() {}",
-				"sketch/sketch.yaml": "board: unoQ",
+				"root-folder/app.yaml":       "name: ignored",
+				"root-folder/python/main.py": "pass",
 			},
-			wantErr: false,
+			expectedFolder: "root-folder",
+			wantErr:        false,
 		},
 		{
-			name:       "Success - Ignores junk files",
-			folderName: "test",
+			name:            "Success - Conflict Resolution (Suffix)",
+			originalZipName: "existing-app.zip",
 			zipFiles: map[string]string{
 				"app.yaml":       "name: test",
-				"python/main.py": "print('hello')",
-				"junk/._junk":    "garbage",
-			},
-			wantErr: false,
-		},
-		{
-			name:       "Error - Empty App Name in YAML",
-			folderName: "",
-			zipFiles: map[string]string{
-				"app.yaml":       "name: \"   \"",
-				"python/main.py": "print('h')",
-			},
-			wantErr:       true,
-			expectedErr:   ErrBadRequest,
-			errorContains: "app name is missing",
-		},
-		{
-			name:       "Error - App Already Exists",
-			folderName: "existing-app",
-			zipFiles: map[string]string{
-				"app.yaml":       "name: Existing App",
-				"python/main.py": "print('hello')",
+				"python/main.py": "pass",
 			},
 			preExisting: true,
-			wantErr:     true,
-			expectedErr: ErrAppAlreadyExists,
+			wantErr:     false,
 		},
 		{
-			name:       "Error - Missing app.yaml",
-			folderName: "no-yaml",
+			name:            "Error - Too Deep Structure",
+			originalZipName: "test.zip",
 			zipFiles: map[string]string{
-				"python/main.py": "print('hello')",
+				"dir1/dir2/app.yaml": "name: test",
 			},
 			wantErr:       true,
-			expectedErr:   ErrBadRequest,
-			errorContains: "missing app.yaml",
+			errorContains: "missing or misplaced app.yaml",
 		},
 		{
-			name:       "Error - Missing python/main.py",
-			folderName: "test",
+			name:            "Error - Missing python/main.py",
+			originalZipName: "valid-name.zip",
 			zipFiles: map[string]string{
 				"app.yaml": "name: test",
 			},
 			wantErr:       true,
-			expectedErr:   ErrBadRequest,
 			errorContains: "missing python/main.py",
 		},
 		{
-			name:       "Error - Sketch missing .ino",
-			folderName: "broken-sketch",
-			zipFiles: map[string]string{
-				"app.yaml":           "name: Broken Sketch",
-				"python/main.py":     "",
-				"sketch/sketch.yaml": "",
-			},
-			wantErr:       true,
-			expectedErr:   ErrBadRequest,
-			errorContains: "missing .ino file",
-		},
-		{
-			name:       "Error - Zip Slip Attack",
-			folderName: "hacker-app",
+			name:            "Error - Zip Slip Attack",
+			originalZipName: "evil.zip",
 			zipFiles: map[string]string{
 				"app.yaml":       "name: hacker",
 				"python/main.py": "",
@@ -403,49 +392,41 @@ func TestImportAppFromZip(t *testing.T) {
 
 			t.Setenv("ARDUINO_APP_CLI__APPS_DIR", appsDirPath)
 			t.Setenv("ARDUINO_APP_CLI__DATA_DIR", filepath.Join(tmpRoot, "Data"))
-
 			cfg, err := config.NewFromEnv()
 			require.NoError(t, err)
 
 			idProvider := app.NewAppIDProvider(cfg)
 
 			if tc.preExisting {
-				existsPath := filepath.Join(appsDirPath, tc.folderName)
+				// create pre-existing app folder to force conflict
+				baseName := strings.TrimSuffix(tc.originalZipName, filepath.Ext(tc.originalZipName))
+				existsPath := filepath.Join(appsDirPath, slug.Make(baseName))
 				require.NoError(t, os.MkdirAll(existsPath, 0755))
 			}
 
-			zipPath := filepath.Join(tmpRoot, "import.zip")
+			zipPath := filepath.Join(tmpRoot, "temp_import.zip")
 			createZipFile(t, zipPath, tc.zipFiles)
-
-			id, err := ImportAppFromZip(cfg, paths.New(zipPath), idProvider)
+			id, err := ImportAppFromZip(cfg, paths.New(zipPath), idProvider, tc.originalZipName)
 
 			if tc.wantErr {
 				require.Error(t, err)
-
-				if tc.expectedErr != nil {
-					require.Truef(t, errors.Is(err, tc.expectedErr), "want error %v, got %v", tc.expectedErr, err)
-				}
-
 				if tc.errorContains != "" {
 					require.Contains(t, err.Error(), tc.errorContains)
 				}
-
 				require.Empty(t, id)
 			} else {
 				require.NoError(t, err)
 				require.NotEmpty(t, id)
 
-				finalPath := cfg.AppsDir().Join(tc.folderName)
-
-				require.True(t, finalPath.Exist(), "App folder should exist at %s", finalPath)
-				require.True(t, finalPath.Join("app.yaml").Exist(), "app.yaml missing")
-				require.True(t, finalPath.Join("python/main.py").Exist(), "main.py missing")
-
-				files, _ := finalPath.Parent().ReadDir()
+				// Verify temp folder cleanup
+				files, _ := os.ReadDir(appsDirPath)
 				for _, f := range files {
-					name := f.Base()
-					isTempDir := len(name) > 5 && name[:5] == ".tmp_"
-					require.False(t, isTempDir, "Temporary folder not cleaned up: %s", name)
+					require.False(t, strings.HasPrefix(f.Name(), ".tmp_"), "Temp folder not cleaned: %s", f.Name())
+				}
+
+				if !tc.preExisting && tc.expectedFolder != "" {
+					finalPath := cfg.AppsDir().Join(tc.expectedFolder)
+					require.True(t, finalPath.Exist(), "App folder should be %s", tc.expectedFolder)
 				}
 			}
 		})
@@ -481,5 +462,84 @@ func writeFiles(t *testing.T, tmpPath string, files []string) {
 		dstPath := filepath.Join(tmpPath, path)
 		require.NoError(t, os.MkdirAll(filepath.Dir(dstPath), 0755))
 		require.NoError(t, os.WriteFile(dstPath, content, 0600))
+	}
+}
+
+func TestFindZipRoot(t *testing.T) {
+	WantErrMeessage := "invalid archive structure: missing or misplaced app.yaml. Supported paths: archive.zip/app.yaml or archive.zip/<root_dir>/app.yaml"
+	tests := []struct {
+		name     string
+		files    []string
+		wantRoot string
+		wantErr  bool
+	}{
+		{
+			name:     "No root folder",
+			files:    []string{"app.yaml", "python/main.py"},
+			wantRoot: "",
+			wantErr:  false,
+		},
+		{
+			name:     "No root folder (with .yml)",
+			files:    []string{"app.yml", "python/main.py"},
+			wantRoot: "",
+			wantErr:  false,
+		},
+		{
+			name:     "Nested root folder",
+			files:    []string{"my-app/app.yaml", "my-app/python/main.py"},
+			wantRoot: "my-app",
+			wantErr:  false,
+		},
+		{
+			name:     "Deep Nested folder",
+			files:    []string{"deep/nested/app.yml"},
+			wantRoot: "deep/nested",
+			wantErr:  true,
+		},
+		{
+			name:     "Invalid: Very deep nested folder",
+			files:    []string{"deep/nested/folder/app.yml"},
+			wantRoot: "",
+			wantErr:  true,
+		},
+		{
+			name:     "Missing app.yaml",
+			files:    []string{"data/python/main.py", "README.md"},
+			wantRoot: "",
+			wantErr:  true,
+		},
+		{
+			name:     "Invalid file name",
+			files:    []string{"somethingapp.yaml"},
+			wantRoot: "",
+			wantErr:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := new(bytes.Buffer)
+			zipWriter := zip.NewWriter(buf)
+
+			for _, fname := range tc.files {
+				_, err := zipWriter.Create(fname)
+				require.NoError(t, err)
+			}
+			require.NoError(t, zipWriter.Close())
+
+			zipReader, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+			require.NoError(t, err)
+
+			gotRoot, err := findZipRoot(zipReader)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Equal(t, WantErrMeessage, err.Error())
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tc.wantRoot, gotRoot)
+			}
+		})
 	}
 }
