@@ -250,38 +250,27 @@ func getBrickConfigVariableDetails(
 	return variablesMap, variableDetails
 }
 
-func getUsedByApps(
-	cfg config.Configuration, brickId string, idProvider *app.IDProvider) ([]AppReference, error) {
-	var (
-		pathsToExplore paths.PathList
-		appPaths       paths.PathList
-	)
+func getUsedByApps(cfg config.Configuration, brickId string, idProvider *app.IDProvider) ([]AppReference, error) {
+	var appPaths paths.PathList
+
+	pathsToExplore := paths.NewPathList()
 	pathsToExplore.Add(cfg.ExamplesDir())
 	pathsToExplore.Add(cfg.AppsDir())
-	usedByApps := []AppReference{}
-
 	for _, p := range pathsToExplore {
-		res, err := p.ReadDirRecursiveFiltered(func(file *paths.Path) bool {
-			if file.Base() == ".cache" {
-				return false
-			}
-			if file.Join("app.yaml").NotExist() && file.Join("app.yml").NotExist() {
-				return true
-			}
-			return false
-		}, paths.FilterDirectories(), paths.FilterOutNames("python", "sketch", ".cache"))
+		res, err := app.FindAppsInFolder(p)
 		if err != nil {
 			slog.Error("unable to list apps", slog.String("error", err.Error()))
-			return usedByApps, err
+			return []AppReference{}, err
 		}
 		appPaths.AddAllMissing(res)
 	}
 
-	for _, file := range appPaths {
-		app, err := app.Load(file)
+	usedByApps := []AppReference{}
+	for _, appPath := range appPaths {
+		app, err := app.Load(appPath)
 		if err != nil {
 			// we are not considering the broken apps
-			slog.Warn("unable to parse app.yaml, skipping", "path", file.String(), "error", err.Error())
+			slog.Warn("unable to parse app.yaml, skipping", "path", appPath.String(), "error", err.Error())
 			continue
 		}
 
@@ -289,7 +278,7 @@ func getUsedByApps(
 			if b.ID == brickId {
 				id, err := idProvider.IDFromPath(app.FullPath)
 				if err != nil {
-					return usedByApps, fmt.Errorf("failed to get app ID for %s: %w", app.FullPath, err)
+					return []AppReference{}, fmt.Errorf("failed to get app ID for %s: %w", app.FullPath, err)
 				}
 				usedByApps = append(usedByApps, AppReference{
 					Name: app.Name,
