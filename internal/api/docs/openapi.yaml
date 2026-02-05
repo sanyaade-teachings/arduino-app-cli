@@ -1294,10 +1294,6 @@ components:
           additionalProperties:
             type: string
           type: object
-        model_configuration:
-          additionalProperties:
-            type: string
-          type: object
         name:
           type: string
         runner:
