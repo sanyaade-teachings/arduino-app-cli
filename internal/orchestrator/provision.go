@@ -552,7 +552,7 @@ var (
 	// Regular expression to split on the first colon that is not followed by a hyphen
 	volumeColonSplitRE     = regexp.MustCompile(`:[^-]`)
 	volumeAppHomeReplaceRE = regexp.MustCompile(`\$\{APP_HOME(:-\.)?\}`)
-	volumePathReplaceRE    = regexp.MustCompile(`\$\{([A-Z_-]+)(:-)?([\/a-zA-Z0-9._-]+)?\}`)
+	volumePathReplaceRE    = regexp.MustCompile(`\$\{([A-Z_-]+)(:-)?((?:\$\{[A-Z_-]+\}|[\/a-zA-Z0-9._-])*)?\}`)
 )
 
 // provisionComposeVolumes ensure we create the parent folder with the correct owner.
@@ -603,7 +603,14 @@ func replaceDockerMacros(volume string, app *app.ArduinoApp, mapped_env map[stri
 			if value, ok := mapped_env[groups[1]]; ok {
 				volume = volumePathReplaceRE.ReplaceAllString(volume, value)
 			} else {
-				volume = volumePathReplaceRE.ReplaceAllString(volume, groups[3])
+				// Try to resolve with mapped environent variables as well
+				resolved := os.Expand(groups[3], func(key string) string {
+					if value, ok := mapped_env[key]; ok {
+						return value
+					}
+					return os.Getenv(key)
+				})
+				volume = volumePathReplaceRE.ReplaceAllString(volume, resolved)
 			}
 		default:
 			slog.Warn("Unexpected format for volume replacement", slog.String("volume", volume), slog.String("compose_file", additionalComposeFile))
