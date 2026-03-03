@@ -270,7 +270,7 @@ func generateMainComposeFile(
 			}
 		}
 
-		composeFiles.Add(composeFilePath)
+		composeFiles.AddIfMissing(composeFilePath)
 		services = append(services, svcs...)
 	}
 
