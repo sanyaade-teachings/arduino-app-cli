@@ -1048,15 +1048,14 @@ func compileUploadSketch(
 	} else {
 		inst = resp.GetInstance()
 	}
-
 	defer func() {
 		_, _ = srv.Destroy(ctx, &rpc.DestroyRequest{Instance: inst})
 	}()
+
 	sketchPath, ok := arduinoApp.GetSketchPath()
 	if !ok {
 		return fmt.Errorf("no sketch path found in the Arduino app")
 	}
-	buildPath := arduinoApp.SketchBuildPath().String()
 	sketchResp, err := srv.LoadSketch(ctx, &rpc.LoadSketchRequest{SketchPath: sketchPath.String()})
 	if err != nil {
 		return err
@@ -1104,12 +1103,18 @@ func compileUploadSketch(
 	}
 
 	// build the sketch
+	buildPath := arduinoApp.SketchBuildPath()
+	if buildPath.NotExist() {
+		if err := buildPath.MkdirAll(); err != nil {
+			return fmt.Errorf("failed to create build directory: %w", err)
+		}
+	}
 	server, getCompileResult := commands.CompilerServerToStreams(ctx, w, w, nil)
 	compileReq := rpc.CompileRequest{
 		Instance:   inst,
 		Fqbn:       platform.FQBN,
 		SketchPath: sketchPath.String(),
-		BuildPath:  buildPath,
+		BuildPath:  buildPath.String(),
 		Jobs:       2,
 	}
 
@@ -1134,12 +1139,12 @@ func compileUploadSketch(
 		slog.Info("Used library " + lib.GetName() + " (" + lib.GetVersion() + ") in " + lib.GetInstallDir())
 	}
 
-	if err := uploadSketchInRam(ctx, w, srv, inst, platform, sketchPath.String(), buildPath); err != nil {
+	if err := uploadSketchInRam(ctx, w, srv, inst, platform, sketchPath.String(), buildPath.String()); err != nil {
 		slog.Warn("failed to upload in ram mode, trying to configure the board in ram mode, and retry", slog.String("error", err.Error()))
 		if err := configureMicroInRamMode(ctx, w, srv, inst, platform); err != nil {
 			return err
 		}
-		return uploadSketchInRam(ctx, w, srv, inst, platform, sketchPath.String(), buildPath)
+		return uploadSketchInRam(ctx, w, srv, inst, platform, sketchPath.String(), buildPath.String())
 	}
 	return nil
 }
