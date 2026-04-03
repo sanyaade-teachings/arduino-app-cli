@@ -1107,6 +1107,18 @@ func compileUploadSketch(
 		return err
 	}
 
+	menuOptions, err := GetPlatformMenuOptions(ctx, platform)
+	if err != nil {
+		slog.Warn("failed to get platform menu options", slog.String("error", err.Error()))
+	}
+
+	fqbn := platform.FQBN
+	if menuOptions.Has(WaitForApp) {
+		fqbn += ":" + WaitForApp.String()
+	}
+
+	slog.Debug("compile and upload sketch", slog.String("fqbn", fqbn), slog.Any("menuOptions", menuOptions))
+
 	// build the sketch
 	buildPath := arduinoApp.SketchBuildPath()
 	if buildPath.NotExist() {
@@ -1117,7 +1129,7 @@ func compileUploadSketch(
 	server, getCompileResult := commands.CompilerServerToStreams(ctx, w, w, nil)
 	compileReq := rpc.CompileRequest{
 		Instance:   inst,
-		Fqbn:       platform.FQBN,
+		Fqbn:       fqbn,
 		SketchPath: sketchPath.String(),
 		BuildPath:  buildPath.String(),
 		Jobs:       platform.CompileJobs,
@@ -1144,13 +1156,14 @@ func compileUploadSketch(
 		slog.Info("Used library " + lib.GetName() + " (" + lib.GetVersion() + ") in " + lib.GetInstallDir())
 	}
 
-	if platform.SupportFlashToRam() {
-		if err := uploadSketchInRam(ctx, w, srv, inst, platform, sketchPath.String(), buildPath.String()); err != nil {
+	// Support the legacy ram upload option if there isn't the new wait_linux_boot option.
+	if !menuOptions.Has(WaitForApp) && platform.SupportFlashToRam() {
+		if err := legacyUploadSketchInRam(ctx, w, srv, inst, platform, sketchPath.String(), buildPath.String()); err != nil {
 			slog.Warn("failed to upload in ram mode, trying to configure the board in ram mode, and retry", slog.String("error", err.Error()))
 			if err := configureMicroInRamMode(ctx, w, srv, inst, platform); err != nil {
 				return err
 			}
-			return uploadSketchInRam(ctx, w, srv, inst, platform, sketchPath.String(), buildPath.String())
+			return legacyUploadSketchInRam(ctx, w, srv, inst, platform, sketchPath.String(), buildPath.String())
 		}
 		return nil
 	}
@@ -1161,62 +1174,6 @@ func compileUploadSketch(
 		Fqbn:       platform.FQBN,
 		SketchPath: sketchPath.String(),
 		ImportDir:  buildPath.String(),
-	}, stream)
-}
-
-func uploadSketchInRam(ctx context.Context,
-	w io.Writer,
-	srv rpc.ArduinoCoreServiceServer,
-	inst *rpc.Instance,
-	platform platform.Platform,
-	sketchPath string,
-	buildPath string,
-) error {
-	stream, _ := commands.UploadToServerStreams(ctx, w, w)
-	if err := srv.Upload(&rpc.UploadRequest{
-		Instance:   inst,
-		Fqbn:       platform.FQBN + ":flash_mode=ram",
-		SketchPath: sketchPath,
-		ImportDir:  buildPath,
-	}, stream); err != nil {
-		return err
-	}
-	return nil
-}
-
-// configureMicroInRamMode uploads an empty binary overing any sketch previously uploaded in flash.
-// This is required to be able to upload sketches in ram mode after if there is already a sketch in flash.
-func configureMicroInRamMode(
-	ctx context.Context,
-	w io.Writer,
-	srv rpc.ArduinoCoreServiceServer,
-	inst *rpc.Instance,
-	platform platform.Platform,
-) error {
-	emptyBinDir := paths.New("/tmp/empty")
-	_ = emptyBinDir.MkdirAll()
-	defer func() { _ = emptyBinDir.RemoveAll() }()
-
-	zeros, err := os.Open("/dev/zero")
-	if err != nil {
-		return err
-	}
-	defer zeros.Close()
-
-	empty, err := emptyBinDir.Join("empty.ino.elf-zsk.bin").Create()
-	if err != nil {
-		return err
-	}
-	defer empty.Close()
-	if _, err := io.CopyN(empty, zeros, 50); err != nil {
-		return err
-	}
-
-	stream, _ := commands.UploadToServerStreams(ctx, w, w)
-	return srv.Upload(&rpc.UploadRequest{
-		Instance:  inst,
-		Fqbn:      platform.FQBN + ":flash_mode=flash",
-		ImportDir: emptyBinDir.String(),
 	}, stream)
 }
 
