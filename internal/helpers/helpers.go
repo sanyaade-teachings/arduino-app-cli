@@ -50,34 +50,89 @@ func ArduinoCLITaskProgressToString(progress *rpc.TaskProgress) string {
 	return data
 }
 
+// getDefaultNetworkInterfaceAndIP attempts to determine the IPv4 address of the default network interface
+func getDefaultNetworkInterfaceAndIP() (string, error) {
+	conn, err := net.Dial("udp4", "8.8.8.8:80")
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+
+	localAddr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || localAddr.IP == nil {
+		return "", fmt.Errorf("unable to determine local address")
+	}
+
+	localIP := localAddr.IP.To4()
+	if localIP == nil {
+		return "", fmt.Errorf("default route does not use an IPv4 address")
+	}
+
+	return localIP.String(), nil
+}
+
 func GetHostIP() (string, error) {
+	if ip, err := getDefaultNetworkInterfaceAndIP(); err == nil {
+		return ip, nil
+	}
+
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return "", err
 	}
 
-	getIP := func(name string) (string, error) {
-		for _, iface := range ifaces {
-			if iface.Name == name {
-				addrs, err := iface.Addrs()
-				if err != nil {
-					return "", err
-				}
-				for _, addr := range addrs {
-					if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-						return ipnet.IP.String(), nil
-					}
-				}
+	// Collect IP Addresses from all running, non-loopback interfaces
+	found := map[string]string{}
+	for _, iface := range ifaces {
+		// Skip interfaces that are not running or are loopback
+		if iface.Flags&net.FlagRunning == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			// Filter all non-loopback IPv4 addresses
+			if ip := ipv4FromAddr(addr); ip != nil {
+				found[iface.Name] = ip.String()
+				break
 			}
 		}
-		return "", fmt.Errorf("no IP address found for %s", name)
 	}
 
-	if ip, err := getIP("eth0"); err == nil {
+	// Prefer known interface names like "eth0" or "wlan0"
+	if ip, ok := found["eth0"]; ok {
+		return ip, nil
+	}
+	if ip, ok := found["wlan0"]; ok {
 		return ip, nil
 	}
 
-	return getIP("wlan0")
+	// If no known interfaces, return the first found IP address
+	for _, ip := range found {
+		return ip, nil
+	}
+
+	// If no IP address found, return an error
+	return "", fmt.Errorf("no IP address found")
+}
+
+func ipv4FromAddr(addr net.Addr) net.IP {
+	switch value := addr.(type) {
+	case *net.IPNet:
+		if value.IP.IsLoopback() {
+			return nil
+		}
+		return value.IP.To4()
+	case *net.IPAddr:
+		if value.IP.IsLoopback() {
+			return nil
+		}
+		return value.IP.To4()
+	default:
+		return nil
+	}
 }
 
 func ToHumanMiB(bytes int64) string {
