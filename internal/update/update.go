@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -58,6 +59,7 @@ type ServiceUpdater interface {
 
 type Manager struct {
 	lock                         sync.Mutex
+	isUpgrading                  atomic.Bool
 	debUpdateService             ServiceUpdater
 	arduinoPlatformUpdateService ServiceUpdater
 
@@ -74,10 +76,10 @@ func NewManager(debUpdateService ServiceUpdater, arduinoPlatformUpdateService Se
 }
 
 func (m *Manager) ListUpgradablePackages(ctx context.Context, matcher func(UpgradablePackage) bool) ([]UpgradablePackage, error) {
-	if !m.lock.TryLock() {
+	// Atomically check if an upgrade operation is already in progress. See https://github.com/arduino/arduino-app-cli/issues/381.
+	if m.isUpgrading.Load() {
 		return nil, ErrOperationAlreadyInProgress
 	}
-	defer m.lock.Unlock()
 
 	// Make sure to be connected to the internet, before checking for updates.
 	// This is needed because the checks below work also when offline (using cached data).
@@ -136,9 +138,10 @@ func (m *Manager) UpgradePackages(ctx context.Context, pkgs []UpgradablePackage)
 	if !m.lock.TryLock() {
 		return ErrOperationAlreadyInProgress
 	}
-
+	m.isUpgrading.Store(true)
 	go func() {
 		defer m.lock.Unlock()
+		defer m.isUpgrading.Store(false)
 
 		// We are launching on purpose the update sequentially. The reason is that
 		// the deb pkgs restart the orchestrator, and if we run in parallel the
